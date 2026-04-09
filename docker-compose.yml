@@ -1,0 +1,69 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: sapmon
+      POSTGRES_PASSWORD: sapmon
+      POSTGRES_DB: sapmon
+    volumes:
+      - ./data/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sapmon"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    volumes:
+      - ./data/redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    image: aksoybrk/sapmonitor:backend-latest
+    env_file: .env
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  worker:
+    image: aksoybrk/sapmonitor:backend-latest
+    command: ["celery", "-A", "app.workers.celery_app", "worker", "--loglevel=info", "-Q", "polling,analysis,dispatch", "-c", "4"]
+    env_file: .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  beat:
+    image: aksoybrk/sapmonitor:backend-latest
+    command: ["celery", "-A", "app.workers.beat_schedule", "beat", "--loglevel=info"]
+    env_file: .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  frontend:
+    image: aksoybrk/sapmonitor:frontend-latest
+    ports:
+      - "80:80"
+    depends_on:
+      - api
+    restart: unless-stopped
+
+# Data directories (./data/postgres, ./data/redis) are bind-mounted to the host.
+# Back up the ./data directory to protect production data.
