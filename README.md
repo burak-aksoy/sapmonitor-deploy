@@ -1,4 +1,4 @@
-# SAP Monitor
+# SAP Monitor 🔍
 
 SAP S/4HANA monitoring and alerting platform. Polls your SAP system for background job failures and IDoc errors, analyzes them with an LLM (GPT-4o, Claude, Gemini, or local Ollama), and dispatches alerts to the right team via Microsoft Teams and email.
 
