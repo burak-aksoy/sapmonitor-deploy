@@ -2,27 +2,6 @@
 
 SAP S/4HANA monitoring and alerting platform. Polls your SAP system for background job failures and IDoc errors, analyzes them with an LLM (GPT-4o, Claude, Gemini, or local Ollama), and dispatches alerts to the right team via Microsoft Teams and email.
 
-## How it works
-
-```
-SAP S/4HANA RISE
-  └── OData v4 (OAuth 2.0 or Basic Auth)
-      ├── Background job failures (SM37)
-      └── IDoc errors (WE05)
-           │
-           ▼
-     Celery (polls every 5 min)
-           │
-           ▼
-     LLM analysis + team routing
-           │
-     ┌─────┴─────┐
-     ▼           ▼
-  MS Teams     Email
- Adaptive     (SMTP)
-   Cards
-```
-
 **Key features:**
 - Alert deduplication — same failure won't spam your team
 - LLM-driven team routing — no hardcoded rules, just describe each team in plain language
@@ -33,103 +12,114 @@ SAP S/4HANA RISE
 
 ---
 
-## Quick start
+## Install in 3 steps
 
-### Prerequisites
-
-- Docker Desktop 24+ (includes Docker Compose v2)
-- Python 3 (for secret generation)
-
-### Option A — Automated (recommended)
+**Requirements:** [Docker Desktop 24+](https://www.docker.com/products/docker-desktop/)
 
 ```bash
+# 1. Download
 curl -O https://raw.githubusercontent.com/burak-aksoy/sapmonitor-deploy/main/deploy-local.sh
+
+# 2. Run
 bash deploy-local.sh
+
+# 3. Open
+open http://localhost
 ```
 
-The script creates `.env` with auto-generated secrets, pulls images, and starts all services.
+The script auto-generates secrets, pulls images, and starts all services.
 
-### Option B — Manual
-
-```bash
-# 1. Download the required files
-curl -O https://raw.githubusercontent.com/burak-aksoy/sapmonitor-deploy/main/docker-compose.yml
-curl -O https://raw.githubusercontent.com/burak-aksoy/sapmonitor-deploy/main/.env.example
-
-# 2. Create your .env
-cp .env.example .env
-
-# 3. Generate required secrets
-python3 -c "from cryptography.fernet import Fernet; print('ENCRYPTION_KEY=' + Fernet.generate_key().decode())"
-python3 -c "import secrets; print('JWT_SECRET_KEY=' + secrets.token_hex(32))"
-# Paste the output values into .env
-
-# 4. Pull and start
-docker compose pull
-docker compose up -d
-```
-
-After startup:
+**Default login:** `admin@company.com` / `changeme`
+Change the password immediately via **Settings → Users**.
 
 | URL | Purpose |
 |-----|---------|
 | http://localhost | Web dashboard |
-| http://localhost:8000/api/docs | Swagger UI |
+| http://localhost:8000/api/docs | API docs (Swagger UI) |
 | http://localhost:8000/health | Health check |
-
-**Default login:** `admin@company.com` / `changeme`
-Change the password via **Settings → Users** after first login.
 
 ---
 
-## Configuration
+## Next steps after install
 
-All configuration lives in `.env`. Copy `.env.example` → `.env` and fill in values.
-Restart after changes: `docker compose restart`
+### 1. Connect your SAP system
 
-### SAP Connection
+Edit `.env` and set your SAP credentials, then restart:
 
-| Variable | Description |
-|----------|-------------|
-| `SAP_BASE_URL` | Your S/4HANA tenant URL |
-| `SAP_AUTH_TYPE` | `oauth2` (RISE) or `basic` (on-premise) |
-| `SAP_CLIENT_ID` | OAuth 2.0 client ID |
-| `SAP_CLIENT_SECRET` | OAuth 2.0 client secret |
-| `SAP_TOKEN_URL` | BTP token endpoint |
-| `SAP_USERNAME` / `SAP_PASSWORD` | Basic auth only |
+```bash
+docker compose restart worker beat
+```
 
-SAP connection is optional — the platform starts without it and skips polling until configured.
+**OAuth 2.0 (SAP RISE / BTP):**
+```env
+SAP_BASE_URL=https://your-s4-tenant.s4hana.ondemand.com
+SAP_AUTH_TYPE=oauth2
+SAP_CLIENT_ID=your-client-id
+SAP_CLIENT_SECRET=your-client-secret
+SAP_TOKEN_URL=https://your-btp-tenant.authentication.eu10.hana.ondemand.com/oauth/token
+```
 
-### LLM Provider
+**Basic auth (on-premise):**
+```env
+SAP_BASE_URL=https://your-sap-host:44300
+SAP_AUTH_TYPE=basic
+SAP_USERNAME=MON_API
+SAP_PASSWORD=your-password
+```
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `LLM_PROVIDER` | `openai` | `openai` \| `claude` \| `gemini` \| `ollama` |
-| `OPENAI_API_KEY` | — | Required if using OpenAI |
-| `ANTHROPIC_API_KEY` | — | Required if using Claude |
-| `GOOGLE_API_KEY` | — | Required if using Gemini |
-| `OLLAMA_BASE_URL` | `http://localhost:11434` | Required if using Ollama |
-| `LLM_FALLBACK_PROVIDER` | — | Optional secondary provider if primary fails |
+> SAP connection is optional — the platform starts and runs without it, collectors simply skip polling until configured.
 
-### Email (SMTP)
+### 2. Set your LLM provider
 
-| Variable | Example |
-|----------|---------|
-| `SMTP_HOST` | `smtp.office365.com` |
-| `SMTP_PORT` | `587` |
-| `SMTP_USER` | `sapmonitoring@yourcompany.com` |
-| `SMTP_PASSWORD` | your app password |
+```env
+# OpenAI (default)
+LLM_PROVIDER=openai
+OPENAI_API_KEY=sk-...
+OPENAI_MODEL=gpt-4o
 
-Email recipients are configured per team in **Settings → Teams**.
+# Anthropic Claude
+LLM_PROVIDER=claude
+ANTHROPIC_API_KEY=sk-ant-...
+CLAUDE_MODEL=claude-sonnet-4-6
 
-### Security
+# Google Gemini
+LLM_PROVIDER=gemini
+GOOGLE_API_KEY=AIza...
+GEMINI_MODEL=gemini-1.5-pro
 
-| Variable | How to generate |
-|----------|----------------|
+# Ollama (local, no API key)
+LLM_PROVIDER=ollama
+OLLAMA_BASE_URL=http://host.docker.internal:11434
+OLLAMA_MODEL=llama3.1
+```
+
+### 3. Configure notifications
+
+**Microsoft Teams:** Go to **Settings → Teams** in the web UI and paste your Incoming Webhook URL for each team. Webhooks are encrypted before storage.
+
+**Email:** Set SMTP credentials in `.env`:
+```env
+SMTP_HOST=smtp.office365.com
+SMTP_PORT=587
+SMTP_USER=sapmonitoring@yourcompany.com
+SMTP_PASSWORD=your-app-password
+```
+Then add recipient addresses per team in **Settings → Teams**.
+
+---
+
+## Configuration reference
+
+All settings live in `.env`. Run `docker compose restart` after any change.
+
+### Security keys (auto-generated by deploy script)
+
+| Variable | How to generate manually |
+|----------|--------------------------|
 | `JWT_SECRET_KEY` | `openssl rand -hex 32` |
 | `ENCRYPTION_KEY` | `python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"` |
 
-> **Important:** Changing `ENCRYPTION_KEY` after Teams webhooks have been saved will make those webhooks unreadable — they must be re-entered.
+> Changing `ENCRYPTION_KEY` after Teams webhooks are saved will make them unreadable — re-enter webhooks if you rotate this key.
 
 ### Polling intervals
 
@@ -143,16 +133,60 @@ Email recipients are configured per team in **Settings → Teams**.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `RETENTION_ALERTS_DAYS` | `90` | Days to keep resolved/suppressed alerts |
+| `RETENTION_ALERTS_DAYS` | `90` | Resolved/suppressed alerts |
 | `RETENTION_HEALTH_SNAPSHOTS_DAYS` | `30` | Integration health history |
 | `RETENTION_BACKGROUND_JOBS_DAYS` | `30` | Background job rows |
 | `RETENTION_IDOC_RECORDS_DAYS` | `30` | IDoc record rows |
 
 ---
 
-## SAP ABAP Setup
+## Team routing
 
-The platform requires two custom CDS views in your SAP system. This is a one-time setup by an ABAP developer.
+Routing is driven entirely by the database — no code changes needed.
+
+Each team has a **Routing Description** (Settings → Teams). This text is injected into the LLM prompt at analysis time. The LLM reads all team descriptions and picks the best match.
+
+Default teams seeded on first start:
+
+| Team key | Routes when... |
+|----------|----------------|
+| `basis` | System landscape, transports, RFC failures, performance. **Default fallback.** |
+| `basis_security` | Authorization failures (SU53), PFCG, user lockouts |
+| `abap_developer` | ABAP dumps (ST22), Z-program failures, BAdI errors |
+| `fi_consultant` | FI IDocs, payment runs (F110), GL/AP/AR, period-close |
+| `mm_consultant` | MM IDocs, MRP runs, goods movements, PO processing |
+| `sd_consultant` | SD IDocs, billing, credit management, delivery processing |
+| `pp_consultant` | Production planning jobs, production orders, MES integration |
+| `wm_consultant` | Warehouse management IDocs, transfer orders |
+| `middleware` | REST/SOAP endpoints, SAP PI/PO, BTP Integration Suite |
+
+To add a team: **Settings → Teams → Add Team** — fill in the routing description and webhook URL. Takes effect immediately.
+
+---
+
+## Operations
+
+```bash
+# View logs
+docker compose logs -f api
+docker compose logs -f worker
+docker compose logs -f beat
+
+# Restart after .env changes
+docker compose restart
+
+# Stop
+docker compose down
+
+# Database backup
+docker compose exec postgres pg_dump -U sapmon sapmon > backup_$(date +%Y%m%d).sql
+```
+
+---
+
+## SAP ABAP setup
+
+The platform polls two custom CDS views that must be created once by an ABAP developer. Estimated effort: 1–2 days.
 
 ### Background Jobs View — `Z_MON_BACKGROUND_JOBS`
 
@@ -216,6 +250,8 @@ define view Z_MON_IDOC_ERRORS
       hdr.docrel      as SegmentCount
 }
 where status.status in ( '51', '52', '56', '63', '64', '65' )
+-- 51=Application error, 52=Dispatch ok, 56=IDoc with errors,
+-- 63=Error passing to port, 64=XML conversion error, 65=ALE service error
 ```
 
 Activate both views via `/IWFND/MAINT_SERVICE` → Add Service → search the view name → add to system alias `LOCAL`.
@@ -224,34 +260,25 @@ Create a dedicated technical user (e.g. `MON_API`) with read-only access to `TBT
 
 ---
 
-## Team routing
+## How it works
 
-Routing is driven entirely by the database — no code changes needed.
-
-Each team has a **Routing Description** (Settings → Teams). This text is injected into the LLM prompt at analysis time. The LLM reads all team descriptions and picks the best match.
-
-Default teams seeded on first start: `basis`, `basis_security`, `abap_developer`, `fi_consultant`, `mm_consultant`, `sd_consultant`, `pp_consultant`, `wm_consultant`, `middleware`.
-
-To add a team: **Settings → Teams → Add Team** — fill in the routing description and webhook URL. Active immediately.
-
----
-
-## Operations
-
-```bash
-# Logs
-docker compose logs -f api
-docker compose logs -f worker
-docker compose logs -f beat
-
-# Restart after .env changes
-docker compose restart
-
-# Stop
-docker compose down
-
-# Database backup
-docker compose exec postgres pg_dump -U sapmon sapmon > backup_$(date +%Y%m%d).sql
+```
+SAP S/4HANA RISE
+  └── OData v4 (OAuth 2.0 or Basic Auth)
+      ├── Background job failures (SM37)
+      └── IDoc errors (WE05)
+           │
+           ▼
+     Celery (polls every 5 min)
+           │
+           ▼
+     LLM analysis + team routing
+           │
+     ┌─────┴─────┐
+     ▼           ▼
+  MS Teams     Email
+ Adaptive     (SMTP)
+   Cards
 ```
 
 ---
@@ -262,8 +289,6 @@ docker compose exec postgres pg_dump -U sapmon sapmon > backup_$(date +%Y%m%d).s
 |-------|-----|-------------|
 | `aksoybrk/sapmonitor` | `backend-latest` | FastAPI + Celery worker + beat |
 | `aksoybrk/sapmonitor` | `frontend-latest` | React SPA served by Nginx |
-
-Images are automatically updated on every release.
 
 ---
 
