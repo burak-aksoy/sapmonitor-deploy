@@ -12,7 +12,15 @@ SAP S/4HANA monitoring and alerting platform. Polls your SAP system for backgrou
 
 ---
 
-## Install in 3 steps
+## Installation
+
+- [macOS / Linux](#macos--linux)
+- [Windows](#windows)
+- [Kubernetes](#kubernetes)
+
+---
+
+## macOS / Linux
 
 **Requirements:** [Docker Desktop 24+](https://www.docker.com/products/docker-desktop/)
 
@@ -29,6 +37,376 @@ open http://localhost
 
 The script auto-generates secrets, pulls images, and starts all services.
 
+---
+
+## Windows
+
+**Requirements:** [Docker Desktop for Windows](https://www.docker.com/products/docker-desktop/) with WSL 2 backend enabled.
+
+### Step 1 — Download the files
+
+Open **PowerShell** and run:
+
+```powershell
+curl -O https://raw.githubusercontent.com/burak-aksoy/sapmonitor-deploy/main/docker-compose.yml
+curl -O https://raw.githubusercontent.com/burak-aksoy/sapmonitor-deploy/main/.env.example
+copy .env.example .env
+```
+
+### Step 2 — Generate secrets
+
+**Encryption key:**
+```powershell
+docker run --rm python:3.12-slim python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+```
+
+**JWT secret:**
+```powershell
+-join ((1..32) | ForEach-Object { '{0:x2}' -f (Get-Random -Maximum 256) })
+```
+
+Open `.env` in a text editor (Notepad, VS Code, etc.) and paste the generated values into `ENCRYPTION_KEY=` and `JWT_SECRET_KEY=`.
+
+### Step 3 — Create data directories
+
+```powershell
+mkdir data\postgres
+mkdir data\redis
+```
+
+### Step 4 — Start
+
+```powershell
+docker compose pull
+docker compose up -d
+```
+
+### Step 5 — Open
+
+Navigate to `http://localhost` in your browser.
+
+**Default login:** `admin@company.com` / `changeme`
+
+> **Port conflict:** If port 80 is already in use (e.g. IIS), edit `docker-compose.yml` and change `"80:80"` to `"8080:80"` under the `frontend` service, then access via `http://localhost:8080`.
+
+> **Auto-start on boot:** Docker Desktop → Settings → General → enable "Start Docker Desktop when you log in". The `restart: unless-stopped` policy on all services handles the rest.
+
+### Windows troubleshooting
+
+| Problem | Fix |
+|---------|-----|
+| WSL 2 error on startup | Docker Desktop → Settings → General → enable "Use the WSL 2 based engine" |
+| Container won't start | `docker compose logs <service-name>` |
+| Port 80 in use | Change frontend port to `8080:80` in `docker-compose.yml` |
+
+---
+
+## Kubernetes
+
+**Requirements:** A running Kubernetes cluster with `kubectl` configured. [cert-manager](https://cert-manager.io) and an ingress controller (e.g. ingress-nginx) are recommended for TLS.
+
+### Step 1 — Create namespace and secrets
+
+```bash
+kubectl create namespace sapmonitor
+
+kubectl create secret generic sapmonitor-env \
+  --namespace sapmonitor \
+  --from-env-file=.env
+```
+
+### Step 2 — Deploy
+
+Save the following as `sapmonitor.yaml` and apply it:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: sapmonitor-config
+  namespace: sapmonitor
+data:
+  DATABASE_URL: "postgresql+asyncpg://sapmon:sapmon@postgres:5432/sapmon"
+  REDIS_URL: "redis://redis:6379/0"
+
+---
+# PostgreSQL
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: sapmonitor
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          env:
+            - name: POSTGRES_USER
+              value: sapmon
+            - name: POSTGRES_PASSWORD
+              value: sapmon
+            - name: POSTGRES_DB
+              value: sapmon
+          ports:
+            - containerPort: 5432
+          volumeMounts:
+            - name: pgdata
+              mountPath: /var/lib/postgresql/data
+      volumes:
+        - name: pgdata
+          persistentVolumeClaim:
+            claimName: postgres-pvc
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres-pvc
+  namespace: sapmonitor
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: sapmonitor
+spec:
+  selector:
+    app: postgres
+  ports:
+    - port: 5432
+
+---
+# Redis
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  namespace: sapmonitor
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+    spec:
+      containers:
+        - name: redis
+          image: redis:7-alpine
+          ports:
+            - containerPort: 6379
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: sapmonitor
+spec:
+  selector:
+    app: redis
+  ports:
+    - port: 6379
+
+---
+# API
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+  namespace: sapmonitor
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: api
+  template:
+    metadata:
+      labels:
+        app: api
+    spec:
+      containers:
+        - name: api
+          image: aksoybrk/sapmonitor:backend-latest
+          envFrom:
+            - secretRef:
+                name: sapmonitor-env
+          ports:
+            - containerPort: 8000
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: api
+  namespace: sapmonitor
+spec:
+  selector:
+    app: api
+  ports:
+    - port: 8000
+
+---
+# Celery Worker
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worker
+  namespace: sapmonitor
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: worker
+  template:
+    metadata:
+      labels:
+        app: worker
+    spec:
+      containers:
+        - name: worker
+          image: aksoybrk/sapmonitor:backend-latest
+          command: ["celery", "-A", "app.workers.celery_app", "worker",
+                    "--loglevel=info", "-Q", "polling,analysis,dispatch", "-c", "4"]
+          envFrom:
+            - secretRef:
+                name: sapmonitor-env
+
+---
+# Celery Beat (scheduler) — always exactly 1 replica
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: beat
+  namespace: sapmonitor
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: beat
+  template:
+    metadata:
+      labels:
+        app: beat
+    spec:
+      containers:
+        - name: beat
+          image: aksoybrk/sapmonitor:backend-latest
+          command: ["celery", "-A", "app.workers.beat_schedule", "beat", "--loglevel=info"]
+          envFrom:
+            - secretRef:
+                name: sapmonitor-env
+
+---
+# Frontend
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+  namespace: sapmonitor
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: frontend
+  template:
+    metadata:
+      labels:
+        app: frontend
+    spec:
+      containers:
+        - name: frontend
+          image: aksoybrk/sapmonitor:frontend-latest
+          ports:
+            - containerPort: 80
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend
+  namespace: sapmonitor
+spec:
+  selector:
+    app: frontend
+  ports:
+    - port: 80
+
+---
+# Ingress
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: sapmonitor
+  namespace: sapmonitor
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: sapmonitor.yourdomain.com
+      http:
+        paths:
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: api
+                port:
+                  number: 8000
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: frontend
+                port:
+                  number: 80
+```
+
+```bash
+kubectl apply -f sapmonitor.yaml
+```
+
+### Step 3 — Check rollout
+
+```bash
+kubectl get pods -n sapmonitor
+kubectl rollout status deployment/api -n sapmonitor
+```
+
+### Step 4 — Access
+
+Update `sapmonitor.yourdomain.com` in the Ingress to your actual domain, or use port-forward for local testing:
+
+```bash
+kubectl port-forward svc/frontend 8080:80 -n sapmonitor
+# Open http://localhost:8080
+```
+
+> **Important:** `beat` (Celery scheduler) must always run as exactly **1 replica**. Do not scale it — duplicate beat instances will double-fire every scheduled task.
+
+---
+
+## After installation
+
 **Default login:** `admin@company.com` / `changeme`
 Change the password immediately via **Settings → Users**.
 
@@ -38,16 +416,13 @@ Change the password immediately via **Settings → Users**.
 | http://localhost:8000/api/docs | API docs (Swagger UI) |
 | http://localhost:8000/health | Health check |
 
----
-
-## Next steps after install
-
 ### 1. Connect your SAP system
 
 Edit `.env` and set your SAP credentials, then restart:
 
 ```bash
-docker compose restart worker beat
+docker compose restart worker beat   # Docker
+kubectl rollout restart deployment/worker deployment/beat -n sapmonitor  # Kubernetes
 ```
 
 **OAuth 2.0 (SAP RISE / BTP):**
@@ -67,7 +442,7 @@ SAP_USERNAME=MON_API
 SAP_PASSWORD=your-password
 ```
 
-> SAP connection is optional — the platform starts and runs without it, collectors simply skip polling until configured.
+> SAP connection is optional — the platform starts without it and skips polling until configured.
 
 ### 2. Set your LLM provider
 
@@ -110,12 +485,12 @@ Then add recipient addresses per team in **Settings → Teams**.
 
 ## Configuration reference
 
-All settings live in `.env`. Run `docker compose restart` after any change.
+All settings live in `.env`. Restart services after any change.
 
-### Security keys (auto-generated by deploy script)
+### Security keys
 
-| Variable | How to generate manually |
-|----------|--------------------------|
+| Variable | How to generate |
+|----------|----------------|
 | `JWT_SECRET_KEY` | `openssl rand -hex 32` |
 | `ENCRYPTION_KEY` | `python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"` |
 
@@ -167,19 +542,26 @@ To add a team: **Settings → Teams → Add Team** — fill in the routing descr
 ## Operations
 
 ```bash
-# View logs
+# Logs (Docker)
 docker compose logs -f api
 docker compose logs -f worker
 docker compose logs -f beat
 
-# Restart after .env changes
+# Logs (Kubernetes)
+kubectl logs -f deployment/api -n sapmonitor
+kubectl logs -f deployment/worker -n sapmonitor
+
+# Restart after .env changes (Docker)
 docker compose restart
 
-# Stop
+# Stop (Docker)
 docker compose down
 
-# Database backup
+# Database backup (Docker)
 docker compose exec postgres pg_dump -U sapmon sapmon > backup_$(date +%Y%m%d).sql
+
+# Database backup (Kubernetes)
+kubectl exec -n sapmonitor deployment/postgres -- pg_dump -U sapmon sapmon > backup_$(date +%Y%m%d).sql
 ```
 
 ---
